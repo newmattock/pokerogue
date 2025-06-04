@@ -75,6 +75,7 @@ import {
   PokemonMultiHitModifier,
   PreserveBerryModifier,
 } from "../../modifier/modifier";
+import { BerryModifierType } from "#app/modifier/modifier-type";
 import type { BattlerIndex } from "../../battle";
 import { BattleType } from "#enums/battle-type";
 import { TerrainType } from "../terrain";
@@ -2781,6 +2782,47 @@ export class StealEatBerryAttr extends EatBerryAttr {
     this.reduceBerryModifier(target);
     this.eatBerry(user, target);
 
+    return true;
+  }
+}
+
+/**
+ * Attribute for {@linkcode Moves.RECYCLE} that restores the last berry this
+ * Pokemon consumed.
+ */
+export class RecycleAttr extends MoveEffectAttr {
+  constructor() {
+    super(true);
+  }
+
+  apply(user: Pokemon, _target: Pokemon, _move: Move, _args: any[]): boolean {
+    if (user.getHeldItems().length) {
+      return false;
+    }
+
+    const berryType = user.battleData.berriesEaten.pop();
+    if (berryType === undefined) {
+      return false;
+    }
+
+    const berryModType = new BerryModifierType(berryType);
+    const existing = globalScene.findModifier(
+      m => m instanceof BerryModifier && m.berryType === berryType && m.pokemonId === user.id,
+      user.isPlayer(),
+    ) as BerryModifier | undefined;
+
+    if (existing) {
+      existing.stackCount++;
+    } else {
+      const newBerry = new BerryModifier(berryModType, user.id, berryType, 1);
+      if (user.isPlayer()) {
+        globalScene.addModifier(newBerry);
+      } else {
+        globalScene.addEnemyModifier(newBerry);
+      }
+    }
+
+    globalScene.updateModifiers(user.isPlayer());
     return true;
   }
 }
@@ -7953,6 +7995,15 @@ const failIfGhostTypeCondition: MoveConditionFunc = (user: Pokemon, target: Poke
 
 const failIfNoTargetHeldItemsCondition: MoveConditionFunc = (user: Pokemon, target: Pokemon, move: Move) => target.getHeldItems().filter(i => i.isTransferable)?.length > 0;
 
+/**
+ * Condition for {@linkcode Moves.RECYCLE}. The move only succeeds if the user
+ * does not currently hold an item and has previously consumed a berry this
+ * battle.
+ */
+const recycleCondition: MoveConditionFunc = (user: Pokemon) => {
+  return !user.getHeldItems().length && user.battleData.berriesEaten.length > 0;
+};
+
 const attackedByItemMessageFunc = (user: Pokemon, target: Pokemon, move: Move) => {
   const heldItems = target.getHeldItems().filter(i => i.isTransferable);
   if (heldItems.length === 0) {
@@ -9132,7 +9183,9 @@ export function initMoves() {
       // Also will not reflect roar / whirlwind if the target has ForceSwitchOutImmunityAbAttr
       .edgeCase(),
     new SelfStatusMove(Moves.RECYCLE, PokemonType.NORMAL, -1, 10, -1, 0, 3)
-      .unimplemented(),
+      .attr(RecycleAttr)
+      .condition(recycleCondition)
+      .ignoresProtect(),
     new AttackMove(Moves.REVENGE, PokemonType.FIGHTING, MoveCategory.PHYSICAL, 60, 100, 10, -1, -4, 3)
       .attr(TurnDamagedDoublePowerAttr),
     new AttackMove(Moves.BRICK_BREAK, PokemonType.FIGHTING, MoveCategory.PHYSICAL, 75, 100, 15, -1, 0, 3)
