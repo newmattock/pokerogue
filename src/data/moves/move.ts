@@ -1094,6 +1094,118 @@ export class ChargingSelfStatusMove extends ChargeMove(SelfStatusMove) {}
 export type ChargingMove = ChargingAttackMove | ChargingSelfStatusMove;
 
 /**
+ * Attribute to add BideStoringTag to the user.
+ */
+class AddBideStoringTagAttr extends MoveAttr {
+  constructor() {
+    super(true); // selfTarget = true
+  }
+
+  override apply(user: Pokemon, target: Pokemon | null, move: Move, args: any[]): boolean {
+    if (user) {
+      user.addTag(BattlerTagType.BIDE_STORING, 2, move.id, user.id); // Lasts for 2 turns of storing
+    }
+    return true;
+  }
+}
+
+export class BideMove extends ChargingAttackMove {
+  constructor() {
+    super(
+      Moves.BIDE,
+      PokemonType.NORMAL,
+      MoveCategory.PHYSICAL,
+      0, // power
+      -1, // accuracy (always hits)
+      10, // pp
+      -1, // chance
+      1, // priority
+      7 // generation - Bide is Gen 1, but task says 7. Using 7 as per instruction.
+    );
+    this.moveTarget = MoveTarget.USER; // Initially targets the user to store energy
+    this.makesContact(true);
+    // TODO: IGNORE_PROTECT should ideally only be for the storing phase.
+    // For the release phase, it should be blocked by Protect/Detect.
+    // This might require conditional logic in ignoresProtect() or how flags are checked.
+    // For now, setting it as true as per simplified instruction for storing phase.
+    // this.ignoresProtect(); // This will be handled conditionally by the move itself.
+    this.priority = 1; // Bide has +1 priority on all its turns
+
+    this.chargeText(i18next.t("moveTriggers:bideStoringEnergy", { pokemonName: "{USER}" }));
+    this.chargeAttr(AddBideStoringTagAttr);
+    // Bide's damage phase should be blocked by protect.
+    // We will manage the IGNORE_PROTECT flag dynamically within the move's execution.
+    // By default, it should NOT ignore protect for its final attack.
+    this.setFlag(MoveFlags.IGNORE_PROTECT, false);
+  }
+
+  override apply(user: Pokemon, target: Pokemon, move: Move, args: any[]): boolean {
+    // This 'apply' is for the release phase of Bide.
+    // The 'target' parameter here would typically be the user because moveTarget is USER.
+    // We need to get the actual target from the BideStoringTag.
+
+    const bideTag = user.getTag(BattlerTagType.BIDE_STORING) as BideStoringTag | undefined; // Assume BideStoringTag structure
+    if (!bideTag) {
+      globalScene.queueMessage(i18next.t("battle:attackFailed"));
+      return false; // Should not happen if logic is correct
+    }
+
+    const accumulatedDamage = bideTag.getAccumulatedDamage();
+    const lastAttackerId = bideTag.getLastAttackerId();
+    user.removeTag(BattlerTagType.BIDE_STORING);
+
+    if (accumulatedDamage === 0 || lastAttackerId === null) {
+      globalScene.queueMessage(i18next.t("moveTriggers:bideFailedNoDamage"));
+      return false;
+    }
+
+    const finalTarget = globalScene.getPokemonById(lastAttackerId);
+    if (!finalTarget || !finalTarget.isActive()) {
+      globalScene.queueMessage(i18next.t("moveTriggers:bideFailedTargetNotAvailable"));
+      return false;
+    }
+
+    // Temporarily set IGNORE_PROTECT to false for the damage dealing part
+    const originalIgnoreProtect = this.hasFlag(MoveFlags.IGNORE_PROTECT);
+    this.setFlag(MoveFlags.IGNORE_PROTECT, false);
+
+    if (finalTarget.getTag(BattlerTagType.PROTECTED) && !this.doesFlagEffectApply({ flag: MoveFlags.IGNORE_PROTECT, user, target: finalTarget })) {
+      globalScene.queueMessage(i18next.t("moveTriggers:targetProtected", { targetName: getPokemonNameWithAffix(finalTarget) }));
+      this.setFlag(MoveFlags.IGNORE_PROTECT, originalIgnoreProtect); // Restore flag
+      return false;
+    }
+
+    const bideDamage = accumulatedDamage * 2;
+
+    globalScene.queueMessage(i18next.t("moveTriggers:bideUnleashedEnergy", { pokemonName: getPokemonNameWithAffix(user) }));
+
+    // Apply typeless, non-critical damage
+    // This is a simplified direct damage application.
+    // A more robust solution might involve a custom damage phase or flags.
+    finalTarget.damage(bideDamage, {
+      result: HitResult.EFFECTIVE, // Typeless, so just "effective"
+      move: this.id,
+      source: user,
+      ignoreCrit: true, // Bide cannot crit
+      isTypeless: true, // Custom flag to indicate typeless damage
+      bypassImmunity: false, // Ghost immunity should still apply if not handled by isTypeless
+    });
+
+    finalTarget.updateInfo();
+    user.turnData.damageDealt += bideDamage;
+    user.turnData.totalDamageDealt += bideDamage;
+    user.turnData.attacksLanded++;
+    user.turnData.hitsLeft = 0; // Ensure multi-hit counts are reset
+
+    this.setFlag(MoveFlags.IGNORE_PROTECT, originalIgnoreProtect); // Restore flag
+
+    return true;
+  }
+
+  // TODO: Handle interruptions (Sleep, Freeze, Flinch, Roar, etc.) - likely in BideStoringTag
+}
+
+/**
  * Base class defining all {@linkcode Move} Attributes
  * @abstract
  * @see {@linkcode apply}

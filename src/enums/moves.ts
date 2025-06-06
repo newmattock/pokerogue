@@ -234,7 +234,7 @@ export enum Moves {
   /**{@link https://bulbapedia.bulbagarden.net/wiki/Focus_Energy_(move) | Source} */
   FOCUS_ENERGY,
   /**{@link https://bulbapedia.bulbagarden.net/wiki/Bide_(move) | Source} */
-  BIDE,
+  BIDE = 117,
   /**{@link https://bulbapedia.bulbagarden.net/wiki/Metronome_(move) | Source} */
   METRONOME,
   /**{@link https://bulbapedia.bulbagarden.net/wiki/Mirror_Move_(move) | Source} */

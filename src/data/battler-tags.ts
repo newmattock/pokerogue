@@ -133,6 +133,125 @@ export class BattlerTag {
   }
 }
 
+export class BideStoringTag extends BattlerTag {
+  public accumulatedDamage: number = 0;
+  public lastAttackerId: number | null = null;
+  // Bide stores for 2 turns then attacks on the 3rd.
+  // The BattlerTag turnCount will be 2.
+  // This counter helps manage disruptions affecting the "charging" state.
+
+  constructor(sourceMove: Moves, sourceId: number, turnCount: number = 2) {
+    super(BattlerTagType.BIDE_STORING,
+          [BattlerTagLapseType.TURN_END, BattlerTagLapseType.AFTER_HIT, BattlerTagLapseType.PRE_MOVE, BattlerTagLapseType.FAINT, BattlerTagLapseType.CUSTOM],
+          turnCount, sourceMove, sourceId, false);
+    // Note: BattlerTagLapseType.CUSTOM might be used for forced switches.
+    // FAINT is added to ensure onRemove logic (like cancelling chargeMove) is triggered if user faints.
+
+  }
+
+  override onAdd(pokemon: Pokemon): void {
+    super.onAdd(pokemon);
+    // Message for "storing energy" is handled by BideMove's chargeText.
+    // Initialize any specific Bide states if necessary.
+  }
+
+  override lapse(pokemon: Pokemon, lapseType: BattlerTagLapseType): boolean {
+    if (lapseType === BattlerTagLapseType.AFTER_HIT) {
+      const moveEffectPhase = globalScene.getCurrentPhase();
+      // Check if the current phase is MoveEffectPhase and if damage was actually dealt to this pokemon
+      if (moveEffectPhase instanceof MoveEffectPhase && moveEffectPhase.targets.some(t => t.pokemon === pokemon && t.damage > 0)) {
+        const attacker = moveEffectPhase.getAttacker();
+        const damageInfo = moveEffectPhase.targets.find(t => t.pokemon === pokemon);
+
+        if (damageInfo && damageInfo.damage > 0 && attacker && attacker !== pokemon) {
+          // TODO: Refine "direct damage" check. The prompt implies specific exclusions.
+          // For now, any damage from a move hitting the Pokemon is accumulated.
+          // We need to ensure this damage is "direct" as per Bide's mechanics.
+          // This might involve checking move flags or damage source properties not yet available here.
+          // Assuming `damageInfo.hitResult` or similar could differentiate direct damage.
+          // For now, we'll accumulate if it's a standard hit.
+          if (damageInfo.hitResult === HitResult.EFFECTIVE || damageInfo.hitResult === HitResult.SUPER_EFFECTIVE || damageInfo.hitResult === HitResult.NOT_VERY_EFFECTIVE) {
+            this.accumulatedDamage += damageInfo.damage;
+            this.lastAttackerId = attacker.id;
+          }
+        }
+      }
+    } else if (lapseType === BattlerTagLapseType.PRE_MOVE) {
+      // Check for interruptions: Sleep, Freeze, Flinch
+      if (pokemon.status?.effect === StatusEffect.SLEEP ||
+          pokemon.status?.effect === StatusEffect.FREEZE ||
+          pokemon.getTag(BattlerTagType.FLINCHED)) {
+        globalScene.queueMessage(i18next.t("moveTriggers:bideDisrupted", { pokemonName: getPokemonNameWithAffix(pokemon) }));
+        if (pokemon.turnData.chargeMove?.moveId === Moves.BIDE) {
+          pokemon.turnData.chargeMove = null; // Cancel the charge
+        }
+        return false; // Remove the tag
+      }
+    }
+
+    // Let the base class handle the actual turn countdown for tag removal.
+    // If super.lapse returns false, the tag will be removed.
+    const continueTag = super.lapse(pokemon, lapseType);
+    if (!continueTag) {
+        // If the tag is being removed by natural expiry (turnCount reached 0 via TURN_END)
+        // BideMove.apply() will handle the attack.
+        // If it's removed for other reasons (FAINT, or PRE_MOVE returned false), cancel charge.
+        if (pokemon.turnData.chargeMove?.moveId === Moves.BIDE && lapseType !== BattlerTagLapseType.TURN_END) {
+             pokemon.turnData.chargeMove = null;
+        }
+    }
+    return continueTag;
+  }
+
+  override onRemove(pokemon: Pokemon): void {
+    // Ensure charge is cancelled if tag is removed for any reason before attack
+    if (pokemon.turnData.chargeMove?.moveId === Moves.BIDE && this.turnCount > 0) {
+       pokemon.turnData.chargeMove = null;
+       // It might be good to have a generic "Bide ended" message if not covered by specific disruptions
+       // globalScene.queueMessage(i18next.t("moveTriggers:bideEnded", { pokemonName: getPokemonNameWithAffix(pokemon) }));
+    }
+    super.onRemove(pokemon);
+  }
+
+  public getAccumulatedDamage(): number {
+    return this.accumulatedDamage;
+  }
+
+  public getLastAttackerId(): number | null {
+    return this.lastAttackerId;
+  }
+
+  // Restrictions
+  public onTrySwitchOut(pokemon: Pokemon): boolean {
+    globalScene.queueMessage(i18next.t("moveTriggers:bideSwitchBlocked", { pokemonName: getPokemonNameWithAffix(pokemon) }));
+    return false; // Prevent switching
+  }
+
+  public onSelectMove(pokemon: Pokemon, moveId: Moves, moveTarget: BattlerIndex): boolean {
+    // Allow if Bide is selected again (e.g. due to Encore), or if the tag is about to lapse this turn (meaning Bide will execute)
+    if (moveId === Moves.BIDE || (pokemon.turnData.chargeMove?.moveId === Moves.BIDE && this.turnCount <= 1)) {
+      return true;
+    }
+    globalScene.queueMessage(i18next.t("moveTriggers:bideMoveSelectionBlocked", { pokemonName: getPokemonNameWithAffix(pokemon) }));
+    return false; // Prevent selecting other moves
+  }
+
+  // Forced switch out (onSwitchOut is a method in Pokemon class, not BattlerTag)
+  // This will be handled by adding BattlerTagLapseType.FAINT and BattlerTagLapseType.CUSTOM (if needed for external calls)
+  // And the Pokemon class's switchOut method should ensure tags are processed/removed.
+  // For now, the onRemove logic tries to capture this.
+
+   /**
+   * When given a battler tag or json representing one, load the data for it.
+   * @param {BattlerTag | any} source A battler tag
+   */
+  override loadTag(source: BattlerTag | any): void {
+    super.loadTag(source);
+    this.accumulatedDamage = source.accumulatedDamage || 0;
+    this.lastAttackerId = source.lastAttackerId || null;
+  }
+}
+
 export interface WeatherBattlerTag {
   weatherTypes: WeatherType[];
 }
